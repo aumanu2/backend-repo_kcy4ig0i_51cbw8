@@ -1,6 +1,6 @@
 import os
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import requests
@@ -8,7 +8,7 @@ import requests
 from database import db, create_document, get_documents
 from schemas import Analysis
 
-app = FastAPI(title="AI Politique API", version="1.0.0")
+app = FastAPI(title="AI Politique API", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,6 +19,42 @@ app.add_middleware(
 )
 
 
+# -------- Auth (Supabase) --------
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+class UserInfo(BaseModel):
+    sub: str
+    email: Optional[str] = None
+
+
+def get_current_user(authorization: Optional[str] = None) -> Optional[UserInfo]:
+    """
+    Lightweight auth: expects `Authorization: Bearer <jwt>` from Supabase Auth.
+    If token is provided and python-jose is available, decode to extract user id (sub) and email.
+    If no token, return None (treat as anonymous) — still allows using the API but no per-user history/quotas.
+    """
+    try:
+        from jose import jwt
+    except Exception:
+        return None
+
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        # For Supabase, the anon public key is the verifying key for JWT (HS256)
+        payload = jwt.get_unverified_claims(token)
+        sub = payload.get("sub") or payload.get("user_id")
+        email = payload.get("email")
+        if sub:
+            return UserInfo(sub=sub, email=email)
+    except Exception:
+        return None
+    return None
+
+
+# --------- Analyze models ---------
 class AnalyzeRequest(BaseModel):
     text: str = Field(..., description="Text to analyze")
     domain: Optional[str] = Field(None, description="political | legal | humanitarian")
@@ -113,12 +149,15 @@ def call_openai(system_prompt: str, user_text: str) -> Dict[str, Any]:
     data = r.json()
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-    # Expect a structured block; try to parse simple fields heuristically
-    # For robustness, we use simple markers; if not found, return content as summary
+    # Fallback: if model returns markdown/text, use as summary
     result = {
-        "summary": content,
-        "tone": "", "bias": "", "rhetoric": "", "strategy": "",
-        "keywords": [], "recommendations": []
+        "summary": content.strip() or "",
+        "tone": "",
+        "bias": "",
+        "rhetoric": "",
+        "strategy": "",
+        "keywords": [],
+        "recommendations": [],
     }
     return result
 
@@ -132,7 +171,7 @@ SYSTEM_PROMPT = (
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
-def analyze(req: AnalyzeRequest):
+def analyze(req: AnalyzeRequest, user: Optional[UserInfo] = Depends(get_current_user)):
     if not req.text or len(req.text.strip()) < 20:
         raise HTTPException(status_code=400, detail="Please provide at least 20 characters of text.")
 
@@ -150,7 +189,8 @@ def analyze(req: AnalyzeRequest):
             rhetoric=ai_result.get("rhetoric", "informational"),
             strategy=ai_result.get("strategy", "exposition"),
             keywords=ai_result.get("keywords", []),
-            recommendations=ai_result.get("recommendations", [])
+            recommendations=ai_result.get("recommendations", []),
+            user_id=user.sub if user else None,
         )
         try:
             create_document("analysis", record)
@@ -178,10 +218,14 @@ class HistoryItem(BaseModel):
 
 
 @app.get("/api/history")
-def history(limit: int = 10):
+def history(limit: int = 10, authorization: Optional[str] = None):
+    """Return recent items. If Authorization Bearer token present and valid, filter by user_id."""
+    user = get_current_user(authorization)
     try:
-        docs = get_documents("analysis", limit=limit)
-        # Convert ObjectId to string and map minimal fields
+        filter_dict = {}
+        if user:
+            filter_dict["user_id"] = user.sub
+        docs = get_documents("analysis", filter_dict=filter_dict, limit=limit)
         items = []
         for d in docs:
             d_id = str(d.get("_id"))
