@@ -8,13 +8,13 @@ Each Pydantic model represents a collection in your database.
 Model name is converted to lowercase for the collection name:
 - User -> "user" collection
 - Product -> "product" collection
-- BlogPost -> "blogs" collection
+- BlogPost -> "blogpost" collection
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 
-# Example schemas (replace with your own):
+# Example schemas (you may keep or remove as needed)
 
 class User(BaseModel):
     """
@@ -38,11 +38,24 @@ class Product(BaseModel):
     category: str = Field(..., description="Product category")
     in_stock: bool = Field(True, description="Whether product is in stock")
 
-# Add your own schemas here:
-# --------------------------------------------------
+# AI Politique analysis schema
+class Analysis(BaseModel):
+    """
+    Stores each analysis result for persistence and later retrieval
+    Collection name: "analysis"
+    """
+    input_text: str = Field(..., description="Original text analyzed")
+    domain: Optional[str] = Field(None, description="Context domain: politics, legal, humanitarian, etc.")
+    language: Optional[str] = Field(None, description="Language of the input text")
 
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+    summary: str = Field(..., description="Neutral summary of the text")
+    tone: str = Field(..., description="Overall tone classification")
+    bias: str = Field(..., description="Detected bias description")
+    rhetoric: str = Field(..., description="Dominant rhetorical style")
+    strategy: str = Field(..., description="Communication/argument strategy")
+
+    keywords: List[str] = Field(default_factory=list, description="Key terms extracted from the text")
+    recommendations: List[str] = Field(default_factory=list, description="3 recommendations/interpretations")
+
+    source: Optional[str] = Field(None, description="Where the text came from (manual, YouTube, X, etc.)")
+    user_id: Optional[str] = Field(None, description="Optional user identifier if auth is added")
